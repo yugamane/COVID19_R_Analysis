@@ -1,0 +1,298 @@
+---
+title: "COVID19_data_analysis"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-08-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### **COVID19 data analysis**
+## Statement of interest: 
+- In this analysis, the primary goal is to examine the impact of COVID-19 on a global and national scale for US, with a specific focus on mortality rates. Understanding these rates is crucial as it helps identify regions that have been most severely affected by the pandemic and may require more targeted public health interventions.**
+
+In this analysis the aim is to achieve the following objectives:
+
+1. **Visualize deaths per 1000 population in the US:**
+   - Create a colored map to highlight the regions with the highest mortality rates.
+   - Provide insights into which areas were most severely affected by the pandemic.
+
+2. **Compare US mortality rates to global rates:**
+   - Develop a visualization comparing US deaths per 1000 population to the global average.
+   - Assess the effectiveness of US mitigation strategies relative to the global response.
+
+3. **Build a predictive model:**
+   - Analyze factors contributing to mortality rates.
+   - Forecast potential future trends to prepare for future public health crises.
+
+## Data source: 
+- I will be using Global and US covid19 cases and deaths data shared John hopkins university. This data is available on github: "https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series"
+
+The data contains files regarding global number of cases and deaths as well as files having US number of cases and deaths. 
+The data has information of province/state, country/region, latitude/longitude, Date
+
+## Installing necessary libraries
+```{r install_libraries}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(knitr)
+library(ggplot2)
+```
+
+## Loading and saving the data 
+```{r load_data}
+# Load the CSV files
+url_in <-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <-
+  c("time_series_covid19_confirmed_US.csv",
+    "time_series_covid19_confirmed_global.csv",
+    "time_series_covid19_deaths_US.csv",
+    "time_series_covid19_deaths_global.csv")
+
+urls <- str_c(url_in, file_names)
+
+#read and save each filein respective variable
+US_cases <- read_csv(urls[1])
+global_cases <- read_csv(urls[2])
+US_deaths <- read_csv(urls[3])
+global_deaths <- read_csv(urls[4])
+```
+##Tranform the data
+
+# Clean and Transform data
+
+1. Pivot each data set by all columns except Province/State, Country/Region, Lat, and Long.
+2. Create new column called "date" and "cases" for the two column's that is being pivoted.
+3. Merge the two global variables and get combined global set with cases and deaths. Repeat for US data as well.
+
+```{r transform_data}
+#pivot global cases
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`, 
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat,Long))
+
+#pivot global deaths
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`, 
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat,Long))
+
+#combine global data, rename a few columns
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+#pivot US cases data
+US_cases <- US_cases %>% 
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+#pivot US deaths data
+US_deaths <- US_deaths %>% 
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+#combine US data
+US <- US_cases %>%
+  full_join(US_deaths)
+
+#combine global
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ",",
+        na.rm = TRUE,
+        remove = FALSE)
+```
+# Add FIPS lookup table for adding population to the global data
+```{r add_fips_data}
+uid_lookup_url <-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+```
+
+##Exploratory analysis
+
+```{r explore_data}
+#visualizing data by state
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+# visualizing by date
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+  
+#visualize filtering where there are cases
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+
+state <- "Washington"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+
+```
+
+## Analysis and visualizations
+```{r add_per100_data}
+#Add deaths/1000 to the data
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000*deaths / population) %>%
+  filter(cases > 0, population > 0)
+```
+# Analyze top 5
+```{r add_top5}
+# Calculate the average death rate per 1000 population
+average_death_rate <- mean(US_state_totals$deaths_per_thou, na.rm = TRUE)
+
+# Sort by death rate and get the top 5 states
+top_5_worst_states <- US_state_totals %>%
+  arrange(desc(deaths_per_thou)) %>%
+  top_n(5, wt = deaths_per_thou)
+
+# Summarize and calculate the death rate per 1000 population
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths, na.rm = TRUE),
+            cases = max(cases, na.rm = TRUE),
+            population = max(Population, na.rm = TRUE),
+            cases_per_thou = 1000 * cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+# Calculate the average death rate
+average_death_rate <- mean(US_state_totals$deaths_per_thou, na.rm = TRUE)
+
+# Get the top 5 states with the highest death rates
+top_5_worst_states <- US_state_totals %>%
+  arrange(desc(deaths_per_thou)) %>%
+  top_n(5, wt = deaths_per_thou)
+```
+#Plot TOP 5 states with deaths/1000 against the average deaths/1000 in US
+```{r plot_top5}
+# Plot the top states with the average death rate line
+ggplot(top_5_worst_states, aes(x = reorder(Province_State, deaths_per_thou), y = deaths_per_thou)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_hline(yintercept = average_death_rate, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(title = "Top 5 States by Death Rate per 1000 Population",
+       x = "State",
+       y = "Death Rate per 1000 Population") +
+  annotate("text", x = Inf, y = average_death_rate, label = paste("Average:", round(average_death_rate, 2)),
+           hjust = 1.1, color = "red") +
+  theme_minimal()
+```
+
+```{r visualize_2}
+summary(US_state_totals$deaths_per_thou)
+
+# Plot the distribution
+library(ggplot2)
+ggplot(US_state_totals, aes(x = deaths_per_thou)) +
+  geom_histogram(binwidth = 0.5, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Death Rates per 1000 Population",
+       x = "Death Rate per 1000 Population",
+       y = "Count") +
+  theme_minimal()
+```
+
+##Modeling
+- Predict the high risk states in US by creating a high-risk variable (1 for high-risk, 0 otherwise)
+
+```{r model}
+# Define a threshold value to 3rd quarter from the anayzed data of distribution of deaths per thousand.
+threshold <-  3.9751 
+
+US_state_totals <- US_state_totals %>%
+  mutate(high_risk = ifelse(deaths_per_thou > threshold, 1, 0)) 
+
+library(glmnet)
+
+# Fit logistic regression model
+logistic_model <- glm(high_risk ~ deaths_per_thou + cases_per_thou + population , data = US_state_totals, family = binomial)
+
+# Summary of the model
+summary(logistic_model)
+US_state_totals$predicted_prob <- predict(logistic_model, type = "response")
+
+# Calculate the maximum value for y-axis limits and breaks
+max_prob <- max(US_state_totals$predicted_prob, na.rm = TRUE)
+breaks_seq <- seq(0, max_prob, by = 0.1)
+
+ggplot(US_state_totals, aes(x = reorder(Province_State, predicted_prob), y = predicted_prob, fill = as.factor(high_risk))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Predicted Probability of High-Risk States",
+       x = "State",
+       y = "Predicted Probability") +
+  scale_fill_manual(values = c("lightgray", "red"), name = "High Risk") +
+  scale_y_continuous(limits = c(0, max_prob * 1.1),  # Adjust y-axis limits
+                     breaks = breaks_seq,  # Set custom breaks
+                     labels = scales::percent_format(accuracy = 0.1)) +  # Format y-axis labels as percentage
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8),  # Adjust text size for better readability
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10))
+
+```
+## Biases:
+
+- Missing data on hospital utilization: Model does not account for how healthcare infrastructure will affect the outcomes. Availability of ICU and hospital capacity are some data points that can skew the estimates for variables (like death rates) and the prediction might be inaccurate.
+- There is a over fitting in the model, so thought it may perform on the given data but can perform poorly on new, unseen data and may affect the predictive power.
